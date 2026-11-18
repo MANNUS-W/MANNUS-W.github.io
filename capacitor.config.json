@@ -1,0 +1,14 @@
+{
+  "appId": "cn.dailyji.app",
+  "appName": "日常集",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0,
+      "backgroundColor": "#3d6b4f"
+    }
+  }
+}
