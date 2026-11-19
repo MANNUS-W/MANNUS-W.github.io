@@ -1,0 +1,75 @@
+name: 构建 Android 安装包 (APK)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-apk.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: 安装 Android SDK 组件
+        run: |
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" > /dev/null
+          yes | sdkmanager --licenses > /dev/null || true
+
+      - name: 准备 Web 资源
+        run: node scripts/prepare-www.mjs
+
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 生成 Android 工程
+        run: |
+          npx cap add android
+          npx cap sync android
+
+      - name: 构建 Debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: 上传 APK 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: richangji-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: 发布到 Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: 日常集 Android 安装包 #${{ github.run_number }}
+          body: |
+            自动构建的 debug 版 APK，与网页版同一份代码。
+            下载后传到手机，在系统设置里允许「安装未知来源应用」即可安装。
+            数据存在 App 本机，可用页面里的「导出备份 / 导入恢复」迁移。
+          files: android/app/build/outputs/apk/debug/app-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
