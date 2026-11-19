@@ -31,25 +31,15 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # GitHub 托管 runner 已预装 Android SDK，这里只做自检与按需补齐，
-      # 不再依赖外部 setup-android 动作下载 SDK（原失败步骤，20 秒即挂）。
-      - name: 环境自检与 SDK 补齐
+      # runner 预装 Android SDK（platforms 含 android-35、build-tools 含 35.0.0），只做自检。
+      - name: 环境自检
         run: |
-          echo "JAVA_HOME=$JAVA_HOME"
           java -version
           echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          echo "--- 预装 platforms ---"
+          echo "--- platforms ---"
           ls "$ANDROID_HOME/platforms" || true
-          echo "--- 预装 build-tools ---"
+          echo "--- build-tools ---"
           ls "$ANDROID_HOME/build-tools" || true
-          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          if [ -x "$SDKM" ]; then
-            yes | "$SDKM" --licenses > /dev/null 2>&1 || true
-            "$SDKM" --install "platforms;android-35" "build-tools;35.0.0" || echo "sdkmanager 补齐跳过，使用预装组件继续"
-          else
-            echo "未找到 sdkmanager，直接使用预装组件"
-          fi
 
       - name: 准备 Web 资源
         run: node scripts/prepare-www.mjs
@@ -64,11 +54,47 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      - name: 构建 Debug APK
+      # Capacitor 模板默认下载 gradle-8.11.1-all.zip（约 200MB）且 networkTimeout 仅 10 秒，
+      # 在 CI 上极易超时导致 BUILD FAILED。这里换成更小的 -bin 包并把超时放大。
+      - name: 调整 Gradle 配置
+        run: |
+          cd android
+          sed -i 's/gradle-8.11.1-all.zip/gradle-8.11.1-bin.zip/' gradle/wrapper/gradle-wrapper.properties
+          sed -i 's/networkTimeout=10000/networkTimeout=180000/' gradle/wrapper/gradle-wrapper.properties
+          if ! grep -q 'networkTimeout=180000' gradle/wrapper/gradle-wrapper.properties; then
+            printf '\nnetworkTimeout=180000\n' >> gradle/wrapper/gradle-wrapper.properties
+          fi
+          echo "--- gradle-wrapper.properties ---"
+          cat gradle/wrapper/gradle-wrapper.properties
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "--- local.properties ---"
+          cat local.properties
+          printf '\norg.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m\norg.gradle.daemon=false\n' >> gradle.properties
+
+      # 单独一步预热：如果 Gradle 发行版下载有问题，会在这一步明确失败，而不是混在构建里。
+      - name: 预热 Gradle
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew --version
+
+      - name: 构建 Debug APK
+        run: |
+          cd android
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle.log
+
+      # 失败时把 Gradle 的错误摘要顶到日志末尾，省得再往上翻几百行。
+      - name: 失败时输出错误摘要
+        if: failure()
+        run: |
+          echo "===== GRADLE ERROR SUMMARY ====="
+          if [ -f /tmp/gradle.log ]; then
+            grep -n -A 20 -E "FAILURE: Build failed|What went wrong|Could not download|Could not resolve" /tmp/gradle.log | head -70 || true
+            echo "----- 日志最后 40 行 -----"
+            tail -40 /tmp/gradle.log
+          else
+            echo "未生成 gradle.log，失败发生在前面的步骤"
+          fi
 
       - name: 上传 APK 产物
         uses: actions/upload-artifact@v4
@@ -92,4 +118,5 @@ jobs:
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
