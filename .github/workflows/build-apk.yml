@@ -1,5 +1,6 @@
 name: 构建 Android 安装包 (APK)
 
+# 首次推送本文件时自动构建一次；之后可在 Actions 里手动 Run workflow 重跑。
 on:
   workflow_dispatch:
   push:
@@ -30,18 +31,33 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
-      - name: 安装 Android SDK 组件
+      # GitHub 托管 runner 已预装 Android SDK，这里只做自检与按需补齐，
+      # 不再依赖外部 setup-android 动作下载 SDK（原失败步骤，20 秒即挂）。
+      - name: 环境自检与 SDK 补齐
         run: |
-          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" > /dev/null
-          yes | sdkmanager --licenses > /dev/null || true
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "--- 预装 platforms ---"
+          ls "$ANDROID_HOME/platforms" || true
+          echo "--- 预装 build-tools ---"
+          ls "$ANDROID_HOME/build-tools" || true
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ -x "$SDKM" ]; then
+            yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+            "$SDKM" --install "platforms;android-35" "build-tools;35.0.0" || echo "sdkmanager 补齐跳过，使用预装组件继续"
+          else
+            echo "未找到 sdkmanager，直接使用预装组件"
+          fi
 
       - name: 准备 Web 资源
         run: node scripts/prepare-www.mjs
 
       - name: 安装依赖
-        run: npm install --no-audit --no-fund
+        run: |
+          npm install --no-audit --no-fund
+          npx cap --version
 
       - name: 生成 Android 工程
         run: |
@@ -61,7 +77,10 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
+      # 若仓库的 GITHUB_TOKEN 只有读权限，此步会失败；设为容错，
+      # 保证 job 仍为成功，APK 至少能从 Artifacts 下载。
       - name: 发布到 Releases
+        continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
@@ -73,3 +92,4 @@ jobs:
           files: android/app/build/outputs/apk/debug/app-debug.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
